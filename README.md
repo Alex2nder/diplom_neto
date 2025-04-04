@@ -344,7 +344,7 @@ $ ansible -m ping all -i hosts
 $ ansible-playbook -i hosts nginx.yml
 ```
 
-![alt text](img/ansible-playbook -i hosts nginx.png)
+![alt text](img/ansibleplaybooknginx.png)
 
 сайт доступен по адресу http://158.160.165.9
 
