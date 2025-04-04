@@ -385,6 +385,9 @@ ansible-playbook -i hosts zabbix_agent.yml
 
 ![alt text](img/hostszabbix.png)
 
+настраиваем метрики
+![alt text](img/zabbixmon.png)
+
 устанавливаем elacticsearch на сервер 
 
 ![alt text](img/elastic.png)
