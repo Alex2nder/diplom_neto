@@ -337,7 +337,7 @@ ansible_ssh_private_key_file=/home/user/.ssh/id_rsa
 $ ansible -m ping all -i hosts
 ```
 
-![alt text](img/ansible--version.png)
+![alt text](img/ansiblepingall.png)
 
 на виртуальные машины web1 и web2 установим NGINX
 ```
@@ -364,7 +364,7 @@ $ ansible-playbook -i hosts zabbix-server.yml
 после установки zabbix-server доступен по адресу
 
 ```
-http://158.160.158.72:8080/
+http://158.160.143.134:8080/
 ```
 
 ![alt text](img/webzabbix.png)
