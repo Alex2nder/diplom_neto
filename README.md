@@ -397,7 +397,7 @@ ansible-playbook -i hosts kibana.yml
 после установки kibana-server доступен по адресу
 
 ```
-http://158.160.143.229:5601/
+http://158.160.135.97:5601/
 ```
 ![alt](img/elasticweb.png)
 
