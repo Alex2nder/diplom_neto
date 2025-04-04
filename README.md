@@ -381,7 +381,7 @@ ansible-playbook -i hosts zabbix_agent.yml
 после установеи zabbix agenta  на hosts  переходим на страницу web-интерфейса zabbix сервера и настраиваем подключения
 
 
-![alt text](img/hosts zabbix.png)
+![alt text](img/hostszabbix.png)
 
 устанавливаем elacticsearch на сервер 
 
