@@ -172,6 +172,6 @@ ansible-playbook deploy_software.yml
 ![alt text](img/kibdiscover.png)
 
 
-<div align="center"> Полное удаление инфраструктуры: </div>
+<div align="center"> Полное удаление инфраструктуры на основе состояния в terraform: </div>
 
 ![alt text](img/destroy.png)
