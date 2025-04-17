@@ -172,3 +172,6 @@ ansible-playbook deploy_software.yml
 ![alt text](img/kibdiscover.png)
 
 
+<div align="center"> Полное удаление инфраструктуры: </div>
+
+![alt text](img/destroy.png)
