@@ -1,0 +1,241 @@
+---
+- import_tasks: server.yml
+  when: "'zabbix' in group_names"
+
+- import_tasks: agent.yml
+
+- name: Wait for Zabbix API to be available
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "apiinfo.version",
+        "params": {},
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_api_check
+  retries: 30
+  delay: 10
+  until: zabbix_api_check.status == 200 and zabbix_api_check.json.result is defined
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Login to Zabbix API to get auth token
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "user.login",
+        "params": {
+          "username": "{{ zabbix_api_user }}",
+          "password": "{{ zabbix_api_password }}"
+        },
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: zabbix_login
+  failed_when: "'error' in zabbix_login.json"
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Set fact for Zabbix API token
+  ansible.builtin.set_fact:
+    zabbix_api_token: "{{ zabbix_login.json.result }}"
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Ensure Zabbix server host exists with correct name
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.get",
+        "params": {
+          "filter": {
+            "host": "Zabbix server"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: zabbix_server_host
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Update Zabbix server host if needed
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+          "hostid": "{{ zabbix_server_host.json.result[0].hostid }}",
+          "host": "Zabbix server",
+          "name": "Zabbix server",
+          "interfaces": [
+            {
+              "type": 1,
+              "main": 1,
+              "useip": 0,
+              "ip": "",
+              "dns": "zabbix-server.ru-central1.internal",
+              "port": "10050"
+            }
+          ]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  when: "'zabbix' in group_names and zabbix_server_host.json.result | length > 0"
+  run_once: true
+
+- name: Get Zabbix server public IP from Terraform
+  terraform_output:
+    path: "/home/alexander/diplom/terraform"
+    variable: "inventory"
+  register: terraform_inventory
+  delegate_to: localhost
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Fail if Zabbix server public IP is not retrieved
+  ansible.builtin.fail:
+    msg: "Failed to retrieve Zabbix server public IP from Terraform"
+  when: "terraform_inventory.value.internal_servers.zabbix[0].public_ip is not defined"
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Set Zabbix public IP fact on localhost
+  ansible.builtin.set_fact:
+    zabbix_public_ip_global: "{{ terraform_inventory.value.internal_servers.zabbix[0].public_ip }}"
+  delegate_to: localhost
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Debug Zabbix public IP on localhost
+  ansible.builtin.debug:
+    var: zabbix_public_ip_global
+  delegate_to: localhost
+  run_once: true
+
+- name: Get all hosts from Zabbix
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.get",
+        "params": {
+          "output": ["hostid", "host"],
+          "selectTemplates": ["templateid"]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: zabbix_hosts
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Get template ID for 'Linux by Zabbix agent active'
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "template.get",
+        "params": {
+          "filter": {
+            "host": "Linux by Zabbix agent active"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: template_check
+  run_once: true
+  when: "'zabbix' in group_names"
+
+- name: Unlink and clear template for all hosts
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+          "hostid": "{{ item.hostid }}",
+          "templates_clear": [
+            {
+              "templateid": "{{ template_check.json.result[0].templateid }}"
+            }
+          ]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  loop: "{{ zabbix_hosts.json.result }}"
+  when: "'zabbix' in group_names and template_check.json.result | length > 0"
+  run_once: true
+
+- name: Link template to all hosts
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.update",
+        "params": {
+          "hostid": "{{ item.hostid }}",
+          "templates": [
+            {
+              "templateid": "{{ template_check.json.result[0].templateid }}"
+            }
+          ]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  loop: "{{ zabbix_hosts.json.result }}"
+  when: "'zabbix' in group_names and template_check.json.result | length > 0"
+  run_once: true
+
+- name: Import dashboards tasks
+  import_tasks: dashboards.yml
+  when: "'zabbix' in group_names"

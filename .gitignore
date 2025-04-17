@@ -1,0 +1,20 @@
+# Terraform state files
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# Sensitive files
+private_key.pem
+vault_pass.txt
+
+# Logs
+*.log
+
+# Temporary files
+*.txt
+*.bak
+*.tmp
+
+# Other
+cookies.txt

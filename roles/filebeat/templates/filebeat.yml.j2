@@ -1,0 +1,35 @@
+filebeat.inputs:
+{% if 'web_servers' in group_names %}
+- type: log
+  enabled: true
+  paths:
+    - /var/log/nginx/access.log
+    - /var/log/nginx/error.log
+{% elif 'bastion' in group_names %}
+- type: log
+  enabled: true
+  paths:
+    - /var/log/syslog
+    - /var/log/auth.log
+{% elif 'elasticsearch' in group_names %}
+- type: log
+  enabled: true
+  paths:
+    - /var/log/elasticsearch/*.log
+{% elif 'kibana' in group_names %}
+- type: log
+  enabled: true
+  paths:
+    - /var/log/kibana/*.log
+{% elif 'zabbix' in group_names %}
+- type: log
+  enabled: true
+  paths:
+    - /var/log/zabbix/*.log
+{% endif %}
+
+output.elasticsearch:
+  hosts: ["http://{{ hostvars[groups['elasticsearch'][0]]['ansible_host'] }}:9200"]
+
+# Включаем метаданные хоста для корректного отображения host.name
+add_host_metadata: true

@@ -1,0 +1,15 @@
+---
+- name: Configure security groups
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+  - name: Create security group
+    uri:
+      url: "https://vpc.api.cloud.yandex.net/vpc/v1/securityGroups"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/security_group.json') }}"
+      body_format: json
+    register: security_group

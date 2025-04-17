@@ -1,0 +1,804 @@
+---
+- name: Удаление старого репозитория Zabbix (если существует)
+  ansible.builtin.file:
+    path: "/etc/apt/sources.list.d/zabbix.list"
+    state: absent
+  become: true
+
+- name: Проверка процессов, удерживающих блокировки apt
+  ansible.builtin.shell: |
+    sudo lsof /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock || true
+  become: true
+  changed_when: false
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  register: apt_process_log
+
+- name: Отладка процессов apt
+  ansible.builtin.debug:
+    var: apt_process_log.stdout_lines
+  when: apt_process_log.stdout_lines is defined
+
+- name: Остановка сервисов apt
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+    - unattended-upgrades
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  ignore_errors: true
+
+- name: Проверка наличия файлов блокировок
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /var/lib/dpkg/lock-frontend
+    - /var/lib/apt/lists/lock
+    - /var/cache/apt/archives/lock
+  become: true
+  register: lock_files
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+
+- name: Удаление залипших файлов блокировок
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: absent
+  loop: "{{ lock_files.results }}"
+  when:
+    - ansible_distribution in ["Debian", "Ubuntu"]
+    - item.stat.exists
+  become: true
+  notify: Восстановление apt
+
+- name: Ожидание освобождения блокировки apt
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    state: absent
+    timeout: 60
+  loop:
+    - /var/lib/dpkg/lock-frontend
+    - /var/lib/apt/lists/lock
+    - /var/cache/apt/archives/lock
+  become: true
+  changed_when: false
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+
+- name: Добавление ключа репозитория Zabbix
+  ansible.builtin.apt_key:
+    url: "https://repo.zabbix.com/zabbix-official-repo.key"
+    state: present
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+
+- name: Добавление репозитория Zabbix для Ubuntu 22.04 (версия 7.0)
+  ansible.builtin.apt_repository:
+    repo: "deb http://repo.zabbix.com/zabbix/7.0/ubuntu jammy main"
+    state: present
+    filename: zabbix
+    update_cache: yes
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  register: zabbix_repo_add
+  retries: 3
+  delay: 5
+  until: zabbix_repo_add is success
+
+- name: Обновление кэша пакетов
+  ansible.builtin.apt:
+    update_cache: yes
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  retries: 3
+  delay: 5
+
+- name: Установка Zabbix Server, Agent, SQL-скриптов и зависимостей с PostgreSQL
+  ansible.builtin.apt:
+    name: "{{ packages }}"
+    state: present
+  vars:
+    packages:
+      - zabbix-server-pgsql
+      - zabbix-frontend-php
+      - zabbix-nginx-conf
+      - zabbix-agent
+      - zabbix-sql-scripts
+      - postgresql
+      - php8.1-fpm
+      - php8.1-pgsql
+      - python3-psycopg2
+      - python3-virtualenv
+  become: true
+
+- name: Проверка наличия бинарного файла zabbix_server
+  ansible.builtin.stat:
+    path: "/usr/sbin/zabbix_server"
+  register: zabbix_server_binary
+  become: true
+
+- name: Проверка версии Zabbix
+  ansible.builtin.command:
+    cmd: "/usr/sbin/zabbix_server --version"
+  register: zabbix_version_check
+  changed_when: false
+  become: true
+  when: zabbix_server_binary.stat.exists
+
+- name: Отладка версии Zabbix
+  ansible.builtin.debug:
+    msg: "Zabbix Server version: {{ zabbix_version_check.stdout | default('Zabbix server binary not found') }}"
+
+- name: Запуск и активация службы PostgreSQL 14
+  ansible.builtin.service:
+    name: "postgresql@14-main"
+    state: started
+    enabled: yes
+  become: true
+
+- name: Проверка наличия бинарного файла zabbix_server
+  ansible.builtin.stat:
+    path: "/usr/sbin/zabbix_server"
+  register: zabbix_server_binary
+  become: true
+
+- name: Проверка версии Zabbix
+  ansible.builtin.command:
+    cmd: "/usr/sbin/zabbix_server --version"
+  register: zabbix_version_check
+  changed_when: false
+  become: true
+  when: zabbix_server_binary.stat.exists
+
+- name: Отладка версии Zabbix
+  ansible.builtin.debug:
+    msg: "Zabbix Server version: {{ zabbix_version_check.stdout | default('Zabbix server binary not found') }}"
+
+- name: Настройка аутентификации PostgreSQL для локальных подключений
+  community.postgresql.postgresql_pg_hba:
+    dest: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+    contype: local
+    users: all
+    databases: all
+    method: md5
+    state: present
+  become: true
+  vars:
+    postgresql_version: "14"
+  notify: Перезапуск PostgreSQL
+
+- name: Применение конфигурации PostgreSQL через handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Создание пользователя базы данных Zabbix
+  ansible.builtin.postgresql_user:
+    name: zabbix
+    password: "{{ vault_zabbix_db_password }}"
+    state: present
+    login_unix_socket: "/var/run/postgresql"
+  become: true
+  become_user: postgres
+
+- name: Создание базы данных Zabbix
+  ansible.builtin.postgresql_db:
+    name: zabbix
+    owner: zabbix
+    state: present
+    login_unix_socket: "/var/run/postgresql"
+  become: true
+  become_user: postgres
+
+- name: Проверка подключения к PostgreSQL от имени пользователя zabbix
+  ansible.builtin.postgresql_ping:
+    db: zabbix
+    login_user: zabbix
+    login_password: "{{ vault_zabbix_db_password }}"
+    login_host: localhost
+  become: true
+  register: pg_connection_test
+  failed_when: pg_connection_test.failed
+
+- name: Создание директории /var/lib/zabbix
+  ansible.builtin.file:
+    path: "/var/lib/zabbix"
+    state: directory
+    owner: zabbix
+    group: zabbix
+    mode: '0755'
+  become: true
+
+- name: Проверка инициализации базы данных Zabbix
+  ansible.builtin.postgresql_query:
+    db: zabbix
+    login_user: zabbix
+    login_password: "{{ vault_zabbix_db_password }}"
+    login_host: localhost
+    query: "SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users')"
+  register: zabbix_tables_check
+  become: true
+  ignore_errors: true
+
+- name: Импорт схемы Zabbix, если база данных пуста
+  ansible.builtin.shell:
+    cmd: "zcat /usr/share/zabbix-sql-scripts/postgresql/server.sql.gz | psql -h localhost -U zabbix -d zabbix"
+  environment:
+    PGPASSWORD: "{{ vault_zabbix_db_password }}"
+  become: true
+  when: zabbix_tables_check.failed or (zabbix_tables_check.query_result is defined and not zabbix_tables_check.query_result[0].exists)
+  register: schema_import
+  changed_when: schema_import.rc == 0
+
+- name: Пометка схемы как импортированной
+  ansible.builtin.file:
+    path: "/var/lib/zabbix/schema_imported"
+    state: touch
+    owner: zabbix
+    group: zabbix
+    mode: '0644'
+  become: true
+  when: schema_import is changed
+
+- name: Остановка Zabbix-сервера для очистки кэша
+  ansible.builtin.service:
+    name: zabbix-server
+    state: stopped
+  become: true
+
+- name: Очистка кэша базы данных Zabbix
+  ansible.builtin.shell:
+    cmd: "psql -h localhost -U zabbix -d zabbix -c 'DISCARD ALL;'"
+  environment:
+    PGPASSWORD: "{{ vault_zabbix_db_password }}"
+  become: true
+  changed_when: true
+
+- name: Удаление временных файлов Zabbix
+  ansible.builtin.file:
+    path: "/tmp/zabbix_server_*"
+    state: absent
+  become: true
+
+- name: Создание директории /run/zabbix с правильными разрешениями
+  ansible.builtin.file:
+    path: "/run/zabbix"
+    state: directory
+    owner: zabbix
+    group: zabbix
+    mode: '0755'
+  become: true
+
+- name: Создание директории для переопределения systemd zabbix-server
+  ansible.builtin.file:
+    path: "/etc/systemd/system/zabbix-server.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+
+- name: Настройка systemd для Zabbix Server
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/zabbix-server.service.d/override.conf"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/sbin/zabbix_server -c /etc/zabbix/zabbix_server.conf
+      Type=forking
+      PIDFile=/run/zabbix/zabbix_server.pid
+      User=zabbix
+      Group=zabbix
+      RuntimeDirectory=zabbix
+      RuntimeDirectoryMode=0755
+      TimeoutStartSec=60s
+    mode: '0644'
+  become: true
+  notify: Перезагрузка systemd
+
+- name: Убедимся, что Zabbix Server слушает на всех интерфейсах
+  ansible.builtin.lineinfile:
+    path: "/etc/zabbix/zabbix_server.conf"
+    regexp: '^ListenIP='
+    line: 'ListenIP=0.0.0.0'
+    state: present
+  become: true
+  notify: Перезапуск Zabbix Server
+
+- name: Убедимся, что Zabbix Server слушает на порту 10051
+  ansible.builtin.lineinfile:
+    path: "/etc/zabbix/zabbix_server.conf"
+    regexp: '^ListenPort='
+    line: 'ListenPort=10051'
+    state: present
+  become: true
+  notify: Перезапуск Zabbix Server
+
+- name: Настройка конфигурации Zabbix Server
+  ansible.builtin.template:
+    src: templates/zabbix_server.conf.j2
+    dest: "/etc/zabbix/zabbix_server.conf"
+    owner: zabbix
+    group: zabbix
+    mode: '0640'
+  become: true
+  notify: Перезапуск Zabbix Server
+
+- name: Проверка доступности файла логов Zabbix Server
+  ansible.builtin.file:
+    path: "/var/log/zabbix/zabbix_server.log"
+    state: touch
+    owner: zabbix
+    group: zabbix
+    mode: '0644'
+  become: true
+
+- name: Настройка фронтенда Zabbix
+  ansible.builtin.template:
+    src: templates/zabbix.conf.php.j2
+    dest: "/etc/zabbix/web/zabbix.conf.php"
+    owner: zabbix
+    group: zabbix
+    mode: '0640'
+  become: true
+  notify: Перезапуск Nginx и PHP-FPM
+
+- name: Установка pyzabbix в виртуальное окружение
+  ansible.builtin.pip:
+    name: pyzabbix
+    virtualenv: /home/zabbix/zabbix-venv
+    virtualenv_python: python3
+  become: true
+
+- name: Проверка, что PostgreSQL запущен и включён
+  ansible.builtin.service:
+    name: "postgresql@14-main"
+    state: started
+    enabled: yes
+  become: true
+
+- name: Проверка, что Zabbix Server запущен и включён
+  ansible.builtin.service:
+    name: "zabbix-server"
+    state: started
+    enabled: yes
+  become: true
+  retries: 15
+  delay: 20
+  register: zabbix_server_start
+  until: zabbix_server_start is success
+
+- name: Проверка статуса Zabbix Server
+  ansible.builtin.command:
+    cmd: "systemctl status zabbix-server"
+  become: true
+  register: zabbix_status
+  ignore_errors: true
+
+- name: Отладка статуса Zabbix Server
+  ansible.builtin.debug:
+    var: zabbix_status.stdout_lines
+  when: zabbix_status.rc != 0
+
+- name: Проверка логов Zabbix Server, если он неактивен
+  ansible.builtin.command:
+    cmd: "tail -n 20 /var/log/zabbix/zabbix_server.log"
+  become: true
+  register: zabbix_logs
+  when: zabbix_status.rc != 0
+
+- name: Отладка логов Zabbix Server
+  ansible.builtin.debug:
+    var: zabbix_logs.stdout_lines
+  when: zabbix_status.rc != 0
+
+- name: Удаление стандартного сайта Nginx
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/default"
+    state: absent
+  become: true
+  notify: Перезапуск Nginx
+
+- name: Удаление конфликтующей конфигурации Zabbix из conf.d
+  ansible.builtin.file:
+    path: "/etc/nginx/conf.d/zabbix.conf"
+    state: absent
+  become: true
+  notify: Перезапуск Nginx
+
+- name: Настройка Nginx для Zabbix
+  ansible.builtin.template:
+    src: templates/zabbix_nginx.conf.j2
+    dest: "/etc/nginx/sites-enabled/zabbix"
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Перезапуск Nginx
+
+- name: Проверка существования лог-файлов Nginx
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: www-data
+    group: www-data
+    mode: '0644'
+  loop:
+    - /var/log/nginx/zabbix_access.log
+    - /var/log/nginx/zabbix_error.log
+  become: true
+
+- name: Удаление включения из nginx.conf, если оно существует
+  ansible.builtin.lineinfile:
+    path: "/etc/nginx/nginx.conf"
+    regexp: '^include /etc/zabbix/nginx.conf;'
+    state: absent
+  become: true
+  notify: Перезапуск Nginx
+
+- name: Тестирование конфигурации Nginx
+  ansible.builtin.command:
+    cmd: "nginx -t"
+  become: true
+  register: nginx_test
+  changed_when: false
+  failed_when: nginx_test.rc != 0
+
+- name: Отладка вывода теста конфигурации Nginx
+  ansible.builtin.debug:
+    var: nginx_test.stderr_lines
+  when: nginx_test.rc != 0
+
+- name: Установка правильных разрешений для файлов фронтенда Zabbix
+  ansible.builtin.file:
+    path: "/usr/share/zabbix"
+    owner: www-data
+    group: www-data
+    mode: '0755'
+    recurse: yes
+  become: true
+
+- name: Проверка доступности сокета PHP-FPM для Nginx
+  ansible.builtin.command:
+    cmd: "ls -l /run/php/php8.1-fpm.sock"
+  become: true
+  register: php_fpm_socket_check
+  changed_when: false
+
+- name: Отладка сокета PHP-FPM
+  ansible.builtin.debug:
+    var: php_fpm_socket_check.stdout
+
+- name: Запуск и активация Nginx и PHP-FPM
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  loop:
+    - nginx
+    - php8.1-fpm
+  become: true
+  retries: 5
+  delay: 10
+  register: nginx_php_start
+  until: nginx_php_start is success
+
+- name: Проверка наличия файла Zabbix API
+  ansible.builtin.stat:
+    path: "/usr/share/zabbix/api_jsonrpc.php"
+  become: true
+  register: zabbix_api_file
+
+- name: Отладка наличия файла Zabbix API
+  ansible.builtin.debug:
+    msg: "Файл Zabbix API существует: {{ zabbix_api_file.stat.exists }}"
+  when: not zabbix_api_file.stat.exists
+
+- name: Проверка сокета PHP-FPM
+  ansible.builtin.stat:
+    path: "/run/php/php8.1-fpm.sock"
+  become: true
+  register: php_fpm_socket
+
+- name: Отладка статуса сокета PHP-FPM
+  ansible.builtin.debug:
+    msg: "Сокет PHP-FPM существует: {{ php_fpm_socket.stat.exists }}"
+  when: not php_fpm_socket.stat.exists
+
+- name: Ожидание доступности Zabbix API с увеличенным таймаутом
+  ansible.builtin.uri:
+    url: "http://localhost/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "apiinfo.version",
+        "params": {},
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_api_check
+  retries: 30
+  delay: 10
+  until: zabbix_api_check.status == 200 and zabbix_api_check.json.result is defined
+  become: true
+
+- name: Get Zabbix API token
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "user.login",
+        "params": {
+          "username": "{{ zabbix_api_user }}",
+          "password": "{{ zabbix_api_password }}"
+        },
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: zabbix_login
+  failed_when: "'error' in zabbix_login.json"
+  run_once: true
+  tags: zabbix_server
+
+- name: Set fact for Zabbix API token
+  ansible.builtin.set_fact:
+    zabbix_api_token: "{{ zabbix_login.json.result }}"
+  run_once: true
+  tags: zabbix_server
+
+- name: Create Zabbix host group if not exists
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "hostgroup.create",
+        "params": {
+          "name": "Linux servers"
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: hostgroup_create
+  failed_when: >
+    'error' in hostgroup_create.json and
+    'already exists' not in hostgroup_create.json.error.data
+  tags: zabbix_server
+
+- name: Get host group ID for Linux servers
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "hostgroup.get",
+        "params": {
+          "filter": {
+            "name": "Linux servers"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: hostgroup_get
+  when: hostgroup_create.json.result is not defined
+  tags: zabbix_server
+
+- name: Set fact for host group ID
+  ansible.builtin.set_fact:
+    hostgroup_id: "{{ hostgroup_get.json.result[0].groupid if hostgroup_get.json.result | length > 0 else hostgroup_create.json.result.groupids[0] }}"
+  when: hostgroup_create.json.result is defined or hostgroup_get.json.result | length > 0
+  tags: zabbix_server
+
+- name: Check if Zabbix template exists
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "template.get",
+        "params": {
+          "filter": {
+            "host": "Linux by Zabbix agent active"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    return_content: yes
+    status_code: 200
+  register: template_check
+  tags: zabbix_server
+
+- name: Fail if template is not found
+  ansible.builtin.fail:
+    msg: "Template 'Linux by Zabbix agent active' not found in Zabbix. Please ensure it exists."
+  when: template_check.json.result | length == 0
+  tags: zabbix_server
+
+- name: Set fact for template ID
+  ansible.builtin.set_fact:
+    template_id: "{{ template_check.json.result[0].templateid }}"
+  when: template_check.json.result | length > 0
+  tags: zabbix_server
+
+- name: Check if autoregistration action exists
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "action.get",
+        "params": {
+          "output": ["actionid"],
+          "filter": {
+            "eventsource": 2,
+            "name": "Auto registration Linux"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json"
+    status_code: 200
+    return_content: yes
+  register: autoregistration_check
+  tags: zabbix_server
+
+- name: Configure Zabbix autoregistration for Linux hosts
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "action.create",
+        "params": {
+          "name": "Auto registration Linux",
+          "eventsource": 2,
+          "status": 0,
+          "filter": {
+            "evaltype": 0,
+            "conditions": [
+              {
+                "conditiontype": 24,
+                "operator": 2,
+                "value": "Linux"
+              }
+            ]
+          },
+          "operations": [
+            {
+              "operationtype": 4,
+              "opgroup": [
+                {
+                  "groupid": "{{ hostgroup_id }}"
+                }
+              ]
+            },
+            {
+              "operationtype": 6,
+              "optemplate": [
+                {
+                  "templateid": "{{ template_id }}"
+                }
+              ]
+            }
+          ]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json"
+    status_code: 200
+    return_content: yes
+  when: autoregistration_check.json.result | length == 0
+  register: autoregistration_result
+  failed_when: "'error' in autoregistration_result.json and autoregistration_result.json.error.code != -32602"
+  tags: zabbix_server
+
+- name: Update Zabbix autoregistration for Linux hosts
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "action.update",
+        "params": {
+          "actionid": "{{ (autoregistration_check.json.result[0].actionid) }}",
+          "status": 0,
+          "filter": {
+            "evaltype": 0,
+            "conditions": [
+              {
+                "conditiontype": 24,
+                "operator": 2,
+                "value": "Linux"
+              }
+            ]
+          },
+          "operations": [
+            {
+              "operationtype": 4,
+              "opgroup": [
+                {
+                  "groupid": "{{ hostgroup_id }}"
+                }
+              ]
+            },
+            {
+              "operationtype": 6,
+              "optemplate": [
+                {
+                  "templateid": "{{ template_id }}"
+                }
+              ]
+            }
+          ]
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json"
+    status_code: 200
+    return_content: yes
+  when: autoregistration_check.json.result | length > 0
+  register: autoregistration_update
+  failed_when: "'error' in autoregistration_update.json"
+  tags: zabbix_server
+
+- name: Verify autoregistration action
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_server_fqdn }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: |
+      {
+        "jsonrpc": "2.0",
+        "method": "action.get",
+        "params": {
+          "output": "extend",
+          "filter": {
+            "name": "Auto registration Linux"
+          }
+        },
+        "auth": "{{ zabbix_api_token }}",
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json"
+    status_code: 200
+    return_content: yes
+  register: autoregistration_verify
+  tags: zabbix_server
+
+- name: Debug autoregistration action
+  ansible.builtin.debug:
+    var: autoregistration_verify.json.result
+  tags: zabbix_server

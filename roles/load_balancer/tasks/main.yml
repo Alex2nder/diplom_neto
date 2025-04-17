@@ -1,0 +1,45 @@
+---
+- name: Configure load balancer
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+  - name: Create target group
+    uri:
+      url: "https://load-balancer.api.cloud.yandex.net/load-balancer/v1/targetGroups"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/target_group.json') }}"
+      body_format: json
+    register: target_group
+
+  - name: Create backend group
+    uri:
+      url: "https://load-balancer.api.cloud.yandex.net/load-balancer/v1/backendGroups"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/backend_group.json') }}"
+      body_format: json
+    register: backend_group
+
+  - name: Create HTTP router
+    uri:
+      url: "https://load-balancer.api.cloud.yandex.net/load-balancer/v1/httpRouters"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/http_router.json') }}"
+      body_format: json
+    register: http_router
+
+  - name: Create application load balancer
+    uri:
+      url: "https://load-balancer.api.cloud.yandex.net/load-balancer/v1/loadBalancers"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/load_balancer.json') }}"
+      body_format: json
+    register: load_balancer

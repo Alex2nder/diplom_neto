@@ -1,0 +1,116 @@
+---
+- name: Ensure sudo is configured for passwordless systemctl
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/ubuntu
+    line: "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl *"
+    create: yes
+    mode: "0440"
+    validate: "visudo -cf %s"
+  become: true
+
+- name: Wait for cloud-init to complete
+  ansible.builtin.shell: "cloud-init status --wait"
+  become: true
+  changed_when: false
+  register: cloud_init_wait
+  retries: 30
+  delay: 10
+  until: cloud_init_wait.rc == 0
+
+- name: Stop unattended-upgrades to free dpkg lock
+  ansible.builtin.shell: "pkill -f unattended-upgrades || true"
+  become: true
+  changed_when: false
+  failed_when: "result.rc != 0 and result.rc != -15"
+  register: result
+
+- name: Force remove dpkg lock
+  ansible.builtin.shell: "rm -f /var/lib/dpkg/lock-frontend || true"
+  become: true
+  changed_when: false
+  failed_when: false
+
+- name: Wait for dpkg lock to be released
+  ansible.builtin.wait_for:
+    path: /var/lib/dpkg/lock-frontend
+    state: absent
+    timeout: 300
+  become: true
+  register: dpkg_wait
+  retries: 5
+  delay: 10
+  until: dpkg_wait is success
+
+- name: Debug dpkg lock
+  ansible.builtin.shell: "fuser /var/lib/dpkg/lock-frontend || echo 'No lock'"
+  become: true
+  register: dpkg_debug
+  changed_when: false
+  failed_when: false
+
+- name: Show dpkg lock debug
+  ansible.builtin.debug:
+    var: dpkg_debug.stdout
+
+- name: Install Nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+  become: true
+
+- name: Configure Nginx default site
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "/etc/nginx/sites-enabled/default"
+    mode: "0644"
+  become: true
+  notify: Restart Nginx
+
+- name: Remove conflicting Nginx status file
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/status"
+    state: absent
+  become: true
+  notify: Restart Nginx
+
+- name: Test Nginx configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  become: true
+  changed_when: false
+  register: nginx_test
+  failed_when: nginx_test.rc != 0
+
+- name: Add Nginx stub status for monitoring
+  ansible.builtin.blockinfile:
+    path: "/etc/nginx/sites-enabled/default"
+    block: |
+      location /nginx_status {
+          stub_status;
+          allow 127.0.0.1;
+          allow 10.0.0.0/16;  # Внутренняя сеть (ALB, бастион и другие)
+          deny all;
+      }
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - Nginx stub status"
+    insertafter: "server {"
+    create: no
+  when: nginx_test.rc == 0
+  become: true
+  notify: Restart Nginx
+
+- name: Ensure default index page exists
+  ansible.builtin.copy:
+    content: "Welcome to the web server of Cherneckiy_AV!"
+    dest: "/var/www/html/index.html"
+    owner: www-data
+    group: www-data
+    mode: "0644"
+  become: true
+  notify: Restart Nginx
+
+- name: Ensure Nginx is started
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: yes
+  become: true

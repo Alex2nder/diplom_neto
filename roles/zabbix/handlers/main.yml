@@ -1,0 +1,49 @@
+- name: Restart Zabbix agent
+  ansible.builtin.service:
+    name: zabbix-agent
+    state: restarted
+  become: true
+
+- name: Перезапуск Zabbix Server
+  ansible.builtin.service:
+    name: zabbix-server
+    state: restarted
+  become: true
+
+- name: Перезапуск PostgreSQL
+  ansible.builtin.service:
+    name: postgresql@14-main
+    state: restarted
+  become: true
+
+- name: Перезапуск Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: restarted
+  become: true
+
+- name: Перезапуск Nginx и PHP-FPM
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - nginx
+    - php8.1-fpm
+  become: true
+
+- name: Перезагрузка systemd
+  ansible.builtin.systemd:
+    daemon_reexec: yes
+  become: true
+
+- name: Восстановление apt
+  ansible.builtin.shell: |
+    dpkg --configure -a
+    apt update
+  become: true
+  changed_when: false
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reexec: yes
+  become: true

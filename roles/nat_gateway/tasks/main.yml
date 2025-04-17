@@ -1,0 +1,15 @@
+---
+- name: Configure NAT gateway
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+  - name: Create NAT gateway
+    uri:
+      url: "https://vpc.api.cloud.yandex.net/vpc/v1/natGateways"
+      method: POST
+      headers:
+        Authorization: "Bearer {{ token }}"
+      body: "{{ lookup('file', 'templates/nat_gateway.json') }}"
+      body_format: json
+    register: nat_gateway

@@ -1,0 +1,27 @@
+{
+    "name": "web-backend-group",
+    "description": "Backend group for web servers",
+    "labels": {},
+    "folderId": "{{ folder_id }}",
+    "http": {
+      "healthchecks": [
+        {
+          "interval": "10s",
+          "timeout": "5s",
+          "unhealthyThreshold": 3,
+          "healthyThreshold": 3,
+          "httpOptions": {
+            "port": 80,
+            "path": "/"
+          }
+        }
+      ],
+      "backend": {
+        "name": "web-backend",
+        "targetGroups": {
+          "targetGroupId": "{{ target_group.id }}"
+        }
+      }
+    }
+  }
+  

@@ -1,0 +1,15 @@
+{
+  "name": "web-security-group",
+  "description": "Security group for web servers",
+  "labels": {},
+  "folderId": "{{ folder_id }}",
+  "networkId": "enp6tq9s8j9r4pufc5t3",
+  "ingressRules": [
+    {
+      "ports": {
+        "oneOf": [80]
+      },
+      "protocol": "TCP"
+    }
+  ]
+}

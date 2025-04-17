@@ -1,0 +1,103 @@
+- name: Add Elastic repository (Yandex Mirror 7.x)
+  ansible.builtin.shell: |
+    echo "deb [trusted=yes] https://mirror.yandex.ru/mirrors/elastic/7/ stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
+  args:
+    creates: /etc/apt/sources.list.d/elastic-7.x.list
+  become: true
+
+- name: Update APT cache
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+
+- name: Install Elasticsearch
+  ansible.builtin.apt:
+    name: elasticsearch
+    state: present
+  become: true
+
+- name: Configure Elasticsearch network host
+  ansible.builtin.lineinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    regexp: '^#?network.host:'
+    line: "network.host: {{ ansible_host }}"
+  become: true
+  notify: Restart Elasticsearch
+
+- name: Ensure HTTP port is set to 9200
+  ansible.builtin.lineinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    regexp: '^#?http.port:'
+    line: 'http.port: 9200'
+  become: true
+  notify: Restart Elasticsearch
+
+- name: Configure cluster initial master nodes
+  ansible.builtin.lineinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    regexp: '^#?cluster.initial_master_nodes:'
+    line: "cluster.initial_master_nodes: [\"{{ ansible_host }}\"]"
+  become: true
+  notify: Restart Elasticsearch
+
+- name: Set vm.max_map_count for Elasticsearch
+  ansible.builtin.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    sysctl_set: yes
+    reload: yes
+  become: true
+
+- name: Enable Elasticsearch service
+  ansible.builtin.systemd:
+    name: elasticsearch
+    enabled: yes
+  become: true
+
+- name: Start Elasticsearch service
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: started
+  become: true
+
+- name: Wait for Elasticsearch to be ready
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 9200
+    state: started
+    timeout: 60
+  become: true
+
+- name: Create Filebeat index template for Nginx logs
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host }}:9200/_template/filebeat_template"
+    method: PUT
+    body_format: json
+    body: |
+      {
+        "index_patterns": ["filebeat-*"],
+        "settings": {
+          "index": {
+            "number_of_shards": 1,
+            "number_of_replicas": 1
+          }
+        },
+        "mappings": {
+          "properties": {
+            "@timestamp": { "type": "date" },
+            "remote_addr": { "type": "ip" },
+            "request": { "type": "text" },
+            "status": { "type": "keyword" },
+            "body_bytes_sent": { "type": "long" },
+            "http_referer": { "type": "keyword" },
+            "http_user_agent": { "type": "text" },
+            "message": { "type": "text" },
+            "log_type": { "type": "keyword" }
+          }
+        }
+      }
+    status_code: 200
+    headers:
+      Content-Type: application/json
+  become: true

@@ -1,0 +1,4 @@
+---
+plugin: cloud.terraform.terraform_provider
+project_path: /home/alexander/diplom/terraform
+state_file: /home/alexander/diplom/terraform/terraform.tfstate

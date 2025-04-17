@@ -1,0 +1,7 @@
+cluster.name: my-cluster
+node.name: {{ inventory_hostname }}
+network.host: {{ ansible_host }}
+http.port: 9200
+path.logs: /var/log/elasticsearch
+path.data: /var/lib/elasticsearch
+cluster.initial_master_nodes: ["{{ ansible_host }}"]

@@ -1,0 +1,14 @@
+---
+- name: Gather instance info
+  yandex_compute_instance_info:
+    folder_id: "{{ yandex_folder_id }}"
+  register: instances
+
+- name: Create snapshot
+  yandex_compute_snapshot:
+    folder_id: "{{ yandex_folder_id }}"
+    source_disk_id: "{{ item.boot_disk[0].id }}"
+    name: "snapshot-{{ item.name }}"
+  loop: "{{ instances.instances }}"
+  loop_control:
+    loop_var: item

@@ -1,0 +1,22 @@
+---
+- name: Validate Yandex Cloud connection
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+  - name: Check Yandex Cloud CLI version
+    shell: yc --version
+    register: yc_version
+
+  - name: Validate service account credentials
+    uri:
+      url: "https://iam.api.cloud.yandex.net/iam/v1/serviceAccounts?folderId={{ folder_id }}"
+      method: GET
+      headers:
+        Authorization: "Bearer {{ token }}"
+    register: sa_credentials
+
+  - name: Check for errors in response
+    fail:
+      msg: "Failed to validate service account credentials"
+    when: sa_credentials.status != 200

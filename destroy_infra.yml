@@ -1,0 +1,43 @@
+---
+- name: Destroy infrastructure
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Load vault variables
+      include_vars:
+        file: inventory/production/vault.yml
+      no_log: true
+
+    - name: Load group variables
+      include_vars:
+        file: inventory/production/group_vars/all.yml
+
+    - name: Set environment variables
+      set_fact:
+        env:
+          TF_VAR_ssh_public_key: "{{ ssh_public_key }}"
+          TF_VAR_yc_token: "{{ ya_token }}"
+          TF_VAR_cloud_id: "{{ cloud_id }}"
+          TF_VAR_folder_id: "{{ folder_id }}"
+
+    - name: Debug environment variables
+      debug:
+        msg: "TF_VAR_yc_token is {{ env.TF_VAR_yc_token }}"
+
+    - name: Initialize Terraform
+      command: terraform init
+      args:
+        chdir: "{{ lookup('env', 'HOME') }}/diplom/terraform"
+      environment: "{{ env }}"
+
+    - name: Destroy Terraform infrastructure
+      command: terraform destroy -auto-approve
+      args:
+        chdir: "{{ lookup('env', 'HOME') }}/diplom/terraform"
+      environment: "{{ env }}"
+      register: terraform_destroy_output
+
+    - name: Debug Terraform destroy output
+      debug:
+        msg: "{{ terraform_destroy_output.stdout }}"

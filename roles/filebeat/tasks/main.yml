@@ -1,0 +1,64 @@
+---
+- name: Ensure ubuntu user can use sudo without password
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/ubuntu
+    line: "ubuntu ALL=(ALL) NOPASSWD:ALL"
+    create: yes
+    mode: "0440"
+    owner: root
+    group: root
+  become: true
+
+- name: Set Filebeat variables
+  ansible.builtin.set_fact:
+    filebeat_version: "8.17.4"
+    filebeat_arch: "amd64"
+
+- name: Set Filebeat variables
+  ansible.builtin.set_fact:
+    filebeat_version: "8.17.4"
+    filebeat_arch: "amd64"
+
+- name: Download Filebeat .deb package from Yandex mirror
+  ansible.builtin.get_url:
+    url: "http://mirror.yandex.ru/mirrors/elastic/8/pool/main/f/filebeat/filebeat-{{ filebeat_version }}-{{ filebeat_arch }}.deb"
+    dest: "/tmp/filebeat-{{ filebeat_version }}-{{ filebeat_arch }}.deb"
+    mode: "0644"
+  register: filebeat_download
+  retries: 3
+  delay: 5
+  until: filebeat_download is success
+
+- name: Install Filebeat from .deb package
+  ansible.builtin.apt:
+    deb: "/tmp/filebeat-{{ filebeat_version }}-{{ filebeat_arch }}.deb"
+    state: present
+    dpkg_options: "force-confdef,force-confold"
+  become: true
+  register: filebeat_install
+  retries: 3
+  delay: 5
+  until: filebeat_install is succeeded
+
+- name: Remove temporary .deb file
+  ansible.builtin.file:
+    path: "/tmp/filebeat-{{ filebeat_version }}-{{ filebeat_arch }}.deb"
+    state: absent
+  become: true
+
+- name: Configure Filebeat
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: "/etc/filebeat/filebeat.yml"
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  notify: Restart Filebeat
+
+- name: Ensure Filebeat service is started and enabled
+  ansible.builtin.service:
+    name: filebeat
+    state: started
+    enabled: yes
+  become: true

@@ -1,0 +1,197 @@
+- name: Ожидание освобождения блокировки apt
+  ansible.builtin.shell: |
+    timeout 120 bash -c 'while sudo lsof /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || sudo lsof /var/lib/apt/lists/lock > /dev/null 2>&1 || sudo lsof /var/cache/apt/archives/lock > /dev/null 2>&1; do
+      echo "Ожидание освобождения блокировки apt..."
+      sleep 5
+    done'
+  become: true
+  changed_when: false
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  register: apt_lock_wait
+  failed_when: apt_lock_wait.rc != 0
+
+- name: Установка GPG-ключа для репозитория Zabbix
+  ansible.builtin.apt_key:
+    url: "https://repo.zabbix.com/zabbix-official-repo.key"
+    state: present
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+
+- name: Добавление репозитория Zabbix для Ubuntu 22.04
+  ansible.builtin.apt_repository:
+    repo: "deb http://repo.zabbix.com/zabbix/7.0/ubuntu jammy main"
+    state: present
+    filename: zabbix
+    update_cache: yes
+  become: true
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+
+- name: Установка агента Zabbix
+  ansible.builtin.apt:
+    name: zabbix-agent
+    state: present
+    update_cache: yes
+  when: ansible_distribution in ["Debian", "Ubuntu"]
+  become: true
+  register: zabbix_agent_install
+  retries: 5
+  delay: 10
+  until: zabbix_agent_install is success
+
+- name: Ensure /run/zabbix directory exists
+  ansible.builtin.file:
+    path: "/run/zabbix"
+    state: directory
+    owner: zabbix
+    group: zabbix
+    mode: '0755'
+  become: true
+
+- name: Ensure zabbix-agent systemd override directory exists
+  ansible.builtin.file:
+    path: "/etc/systemd/system/zabbix-agent.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+
+- name: Configure systemd override for zabbix-agent
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/zabbix-agent.service.d/override.conf
+    content: |
+      [Service]
+      PIDFile=/run/zabbix/zabbix_agentd.pid
+      RuntimeDirectory=zabbix
+      RuntimeDirectoryMode=0755
+    mode: '0644'
+  become: true
+  notify: Reload systemd
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  become: true
+  when: ansible_service_mgr == "systemd"
+
+- name: Настройка агента Zabbix
+  ansible.builtin.template:
+    src: zabbix_agentd.conf.j2
+    dest: "/etc/zabbix/zabbix_agentd.conf"
+    mode: "0644"
+    validate: "/usr/sbin/zabbix_agentd -c %s -t agent.version"
+  notify: Restart Zabbix agent
+  become: true
+
+- name: Проверка существования директории пользовательских параметров агента Zabbix
+  ansible.builtin.file:
+    path: "/etc/zabbix/zabbix_agentd.d"
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Удаление старого файла system.conf для предотвращения дублирования
+  ansible.builtin.file:
+    path: "/etc/zabbix/zabbix_agentd.d/system.conf"
+    state: absent
+  become: true
+
+- name: Добавление параметров мониторинга системы для Zabbix
+  ansible.builtin.copy:
+    content: |
+      UserParameter=custom.system.cpu.util,cat /proc/stat | grep '^cpu ' | awk '{print $$2+$$3+$$4+$$5}'
+      UserParameter=system.memory.free,free -m | grep 'Mem:' | awk '{print $$4}'
+      UserParameter=kernel.panic,cat /var/log/syslog | grep -c "kernel: Kernel panic"
+    dest: "/etc/zabbix/zabbix_agentd.d/system.conf"
+    mode: "0644"
+  become: true
+  notify: Restart Zabbix agent
+
+- name: Добавление мониторинга статуса Nginx для Zabbix (только веб-серверы)
+  ansible.builtin.copy:
+    content: |
+      UserParameter=nginx.status[*],curl -s http://127.0.0.1/nginx_status | grep '$1' | awk '{print $$3}'
+      UserParameter=nginx.requests,curl -s http://127.0.0.1/nginx_status | grep 'requests' | awk '{print $$3}'
+      UserParameter=nginx.accepts,curl -s http://127.0.0.1/nginx_status | grep 'accepts' | awk '{print $$1}'
+      UserParameter=nginx.dropped,curl -s http://127.0.0.1/nginx_status | grep 'dropped' | awk '{print $$3}'
+    dest: "/etc/zabbix/zabbix_agentd.d/nginx.conf"
+    mode: "0644"
+  when: "'web_servers' in group_names"
+  become: true
+  notify: Restart Zabbix agent
+
+- name: Ensure Zabbix log directory exists
+  ansible.builtin.file:
+    path: "/var/log/zabbix"
+    state: directory
+    owner: zabbix
+    group: zabbix
+    mode: '0755'
+  become: true
+
+- name: Ensure Zabbix Agent log file exists
+  ansible.builtin.file:
+    path: "/var/log/zabbix/zabbix_agentd.log"
+    state: touch
+    owner: zabbix
+    group: zabbix
+    mode: '0644'
+  become: true
+
+- name: Проверка сетевой доступности Zabbix сервера на порту 10051
+  ansible.builtin.wait_for:
+    host: "zabbix-server.ru-central1.internal"
+    port: 10051
+    timeout: 30
+    state: started
+  register: zabbix_server_connectivity
+  ignore_errors: true
+
+- name: Отладка сетевой доступности Zabbix сервера
+  ansible.builtin.debug:
+    msg: "Не удалось подключиться к zabbix-server.ru-central1.internal:10051. Проверьте сетевые настройки и правила безопасности."
+  when: zabbix_server_connectivity.failed
+
+- name: Запуск агента Zabbix
+  ansible.builtin.service:
+    name: zabbix-agent
+    state: started
+    enabled: yes
+  become: true
+
+- name: Ensure Zabbix agent configuration uses correct server
+  ansible.builtin.lineinfile:
+    path: /etc/zabbix/zabbix_agentd.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  loop:
+    - { regexp: '^Server=', line: 'Server=zabbix-server.ru-central1.internal' }
+    - { regexp: '^ServerActive=', line: 'ServerActive=zabbix-server.ru-central1.internal:10051' }
+    - { regexp: '^HostMetadata=', line: 'HostMetadata=Linux' }
+    - { regexp: '^EnableRemoteCommands=', line: 'EnableRemoteCommands=1' }  # Для пассивных проверок
+    - { regexp: '^ListenPort=', line: 'ListenPort=10050' }  # Убедимся, что агент слушает порт 10050
+  notify: Restart Zabbix agent
+  when: inventory_hostname != 'zabbix-server.ru-central1.internal'
+  tags: zabbix_agent
+
+- name: Ensure Zabbix agent is running
+  ansible.builtin.service:
+    name: zabbix-agent
+    state: started
+    enabled: yes
+  when: inventory_hostname != 'zabbix-server.ru-central1.internal'
+  tags: zabbix_agent
+
+- name: Verify Zabbix agent connectivity to server (passive check)
+  ansible.builtin.command:
+    cmd: "zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf -t agent.ping"
+  register: zabbix_agent_ping
+  become: true
+  changed_when: false
+  tags: zabbix_agent
+
+- name: Debug Zabbix agent connectivity
+  ansible.builtin.debug:
+    var: zabbix_agent_ping.stdout
+  tags: zabbix_agent

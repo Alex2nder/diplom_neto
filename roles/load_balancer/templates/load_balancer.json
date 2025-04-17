@@ -1,0 +1,20 @@
+{
+    "name": "web-load-balancer",
+    "description": "Load balancer for web servers",
+    "labels": {},
+    "folderId": "{{ folder_id }}",
+    "networkId": "enp6tq9s8j9r4pufc5t3",
+    "listeners": [
+      {
+        "name": "web-listener",
+        "endpoint": {
+          "port": 80,
+          "ipProtocol": "IPV4"
+        },
+        "httpOptions": {
+          "httpRouterId": "{{ http_router.id }}"
+        }
+      }
+    ]
+  }
+  

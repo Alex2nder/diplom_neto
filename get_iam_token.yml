@@ -1,0 +1,63 @@
+---
+- name: Get new IAM token
+  hosts: localhost
+  gather_facts: no
+
+  become: yes
+
+  tasks:
+  - name: Check if vault file exists
+    stat:
+      path: inventory/production/vault.yml
+    register: vault_file_stat
+
+  - name: Decrypt vault file if it exists and is encrypted
+    command: ansible-vault decrypt inventory/production/vault.yml
+    register: decrypt_output
+    when: vault_file_stat.stat.exists and vault_file_stat.stat.size > 0
+    ignore_errors: yes
+
+  - name: Ensure correct ownership and permissions after decryption
+    file:
+      path: inventory/production/vault.yml
+      owner: alexander
+      group: alexander
+      mode: '0644'
+    when: vault_file_stat.stat.exists and vault_file_stat.stat.size > 0
+
+  - name: Create JWT token
+    command: python3 create_jwt_token.py
+    register: jwt_token_output
+
+  - name: Get IAM token
+    uri:
+      url: "https://iam.api.cloud.yandex.net/iam/v1/tokens"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      body: '{"jwt": "{{ jwt_token_output.stdout }}"}'
+      body_format: json
+    register: iam_response
+
+  - name: Read vault file (if it exists)
+    include_vars:
+      file: inventory/production/vault.yml
+    when: vault_file_stat.stat.exists and vault_file_stat.stat.size > 0
+
+  - name: Update vault file with new token
+    replace:
+      path: inventory/production/vault.yml
+      regexp: 'ya_token: .*'
+      replace: 'ya_token: "{{ iam_response.json.iamToken }}"'
+    when: iam_response.json is defined and iam_response.json.iamToken is defined
+
+  - name: Encrypt vault file
+    command: ansible-vault encrypt inventory/production/vault.yml
+    register: encrypt_output
+
+  - name: Change permissions of the vault file after encryption
+    file:
+      path: inventory/production/vault.yml
+      owner: alexander
+      group: alexander
+      mode: '0600'

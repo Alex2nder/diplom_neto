@@ -1,0 +1,33 @@
+load_balancer_ip: "{{ lookup('env', 'LOAD_BALANCER_IP') }}"
+folder_id: "b1gff74m5ladptv8subr"
+cloud_id: "b1g9h7cb32it31lj3lu1"
+ssh_public_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCOhdFYK/DEphv6E2RzfS7hRIINbVjAeqdJvP9M5YA1y/cycA9R2vaRdoWI8Z7uGLsre7FOUl5kZsa0pT0HGJLowy3yrkIcPA+JEJRfnyFFTUhWKOjM0ocYToHuw2hvXg3SNRn60wNh5B6g1jDlBkq44Lc1dSrg6jm7nLGQs/xrNMrTpV+iaEbuAmVySPkyugQlbuyzbsUe+pOmhBsMIOzqy6R6kDA4YiFQjN4QqQ8e5X80oQVaP/leyKXPC6tV5tavjRRJsL/HAC8uqv7j2N9Lzxm89eWR7O6X4/Tgh5EOyAHkeLxjOv5YZKYD1XkhWS74UbbBJtC2No8B0dk1IJ6i10xy/rvvi4wSrLoiDAXeWqcMbfEvEGFPu0AB+EURQMXLywTVr8TzLIpNV+9KIEm7Ap0m7n1371w46mWo6B17D7/Cdb/9jtaF1AS/11EWWi1P3Pm+bk1puv3JZBzm3gKdYYDTVg2NfEjiUI2R702NX+PiMPQGCFq0Jf2yED9ZLZPbWBaiIBpcOK8pUuoC3PVRYVg2WCSFmy/SPHLbTrsKcFynqkxfWmk6pvjuj4Y5+NIJnouqnr7hn7mxtZ9ju6n6Z2+gjUujx+jv8H7bI+ne4oAc9qJmXhuYGhZrxjxPDVaSCG+3yydOKhcgP69t2g8zyalSPyjc6vxm/IojKXQOjQ== soap_maker@mail.ru"
+
+elasticsearch_host: "elasticsearch-server.ru-central1.internal"
+zabbix_server_host: "zabbix-server.ru-central1.internal"
+# IP ALB можно получить из outputs Terraform
+alb_public_ip: "{{ lookup('file', '../terraform/terraform.tfstate') | from_json | json_query('resources[?type==''yandex_alb_load_balancer''].instances[0].attributes.listeners[0].external_ipv4_endpoint[0].address') | first }}"
+ansible_python_interpreter: /usr/bin/python3
+zabbix_server_fqdn: zabbix-server.ru-central1.internal
+elasticsearch_fqdn: elasticsearch-server.ru-central1.internal
+kibana_fqdn: kibana-server.ru-central1.internal
+terraform_dir: /home/ubuntu/diplom/terraform
+ansible_dir: /home/ubuntu/diplom
+ssh_key_path_bastion: /home/ubuntu/.ssh/id_rsa
+# В group_vars/all.yml
+ansible_ssh_common_args: '-o ProxyCommand="ssh -W %h:%p -i {{ ssh_key_path }} ubuntu@bastion.ru-central1.internal"'
+
+
+local_project_dir: "/home/alexander/diplom"
+tfstate_path: "{{ local_project_dir }}/terraform/terraform.tfstate"
+remote_project_dir: "{{ ansible_user_dir }}/diplom"
+ssh_key_path: "{{ lookup('env', 'SSH_KEY_PATH') | default('~/.ssh/id_rsa', true) | expanduser }}"
+site_files_dir: "{{ local_project_dir }}/site_files"
+inventory_file: "{{ local_project_dir }}/inventory/production/hosts.yml"
+bastion_user: "ubuntu"
+
+# Порт Zabbix-сервера
+zabbix_server_port: 10051
+
+# Имя хоста для агента (используем короткое имя из ansible_hostname для авторегистрации)
+zabbix_agent_hostname: "{{ ansible_hostname }}"

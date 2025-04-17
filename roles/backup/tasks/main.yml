@@ -1,0 +1,8 @@
+---
+- name: Create backup
+  hosts: web
+  become: yes
+
+  tasks:
+  - name: Create snapshot
+    command: "{{ lookup('file', 'files/backup.sh') }}"

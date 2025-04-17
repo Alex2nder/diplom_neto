@@ -1,0 +1,17 @@
+{
+    "name": "web-target-group",
+    "description": "Target group for web servers",
+    "labels": {},
+    "folderId": "{{ folder_id }}",
+    "targets": [
+      {
+        "subnetId": "e9b6uj8k9s9r4pufc5t3",
+        "privateIpv4Address": "10.0.1.10"
+      },
+      {
+        "subnetId": "e9b6uj8k9s9r4pufc5t3",
+        "privateIpv4Address": "10.0.1.11"
+      }
+    ]
+  }
+  

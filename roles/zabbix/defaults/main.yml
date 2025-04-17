@@ -1,0 +1,4 @@
+---
+zabbix_server_fqdn: zabbix-server.ru-central1.internal
+zabbix_server_port: 10051
+zabbix_api_user: Admin

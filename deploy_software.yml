@@ -1,0 +1,290 @@
+---
+- name: Gather Terraform outputs and build inventory
+  hosts: localhost
+  connection: local
+  vars_files:
+    - "/home/alexander/diplom/inventory/production/vault.yml"
+  tasks:
+    - name: Fail if vault variables are not defined
+      ansible.builtin.fail:
+        msg: "Required vault variable {{ item }} is not defined"
+      when: lookup('vars', item, default='') | length == 0
+      loop:
+        - vault_zabbix_db_password
+        - vault_zabbix_admin_password
+        - vault_kibana_elastic_password
+        - vault_mysql_root_password
+
+    - name: Extract Terraform outputs using terraform output command
+      ansible.builtin.command: "/usr/local/bin/terraform output -json"
+      args:
+        chdir: "/home/alexander/diplom/terraform"
+      register: terraform_output
+      changed_when: false
+
+    - name: Parse Terraform outputs into facts
+      set_fact:
+        inventory: "{{ (terraform_output.stdout | from_json).inventory.value }}"
+        balancer_ip_global: "{{ (terraform_output.stdout | from_json).inventory.value.balancer_ip }}"
+        zabbix_public_ip_global: "{{ (terraform_output.stdout | from_json).inventory.value.internal_servers.zabbix[0].public_ip }}"
+        kibana_public_ip_global: "{{ (terraform_output.stdout | from_json).inventory.value.internal_servers.kibana[0].public_ip }}"
+        bastion_public_ip: "{{ (terraform_output.stdout | from_json).inventory.value.bastion.public_ip }}"
+        zabbix_server_ip: "{{ (terraform_output.stdout | from_json).inventory.value.internal_servers.zabbix[0].ansible_host }}"
+      delegate_facts: true
+
+    - name: Add bastion to inventory
+      add_host:
+        name: "{{ inventory.bastion.name }}.ru-central1.internal"
+        groups: "bastion_hosts"
+        ansible_host: "{{ inventory.bastion.ansible_host }}"
+        ansible_ssh_host: "{{ inventory.bastion.ansible_host }}"
+        ansible_ssh_common_args: "{{ inventory.bastion.ssh_args | default('-o StrictHostKeyChecking=no') }}"
+        ansible_user: "ubuntu"
+        ansible_ssh_private_key_file: "/home/alexander/.ssh/id_rsa"
+
+    - name: Add web servers to inventory
+      add_host:
+        name: "{{ item.name }}.ru-central1.internal"
+        groups: "web_servers"
+        ansible_host: "{{ item.ansible_host }}"
+        ansible_ssh_host: "{{ item.ansible_host }}"
+        ansible_ssh_common_args: "{{ item.ssh_args | replace('{{ bastion_public_ip }}', bastion_public_ip) }}"
+        ansible_user: "ubuntu"
+        ansible_ssh_private_key_file: "/home/alexander/.ssh/id_rsa"
+      loop: "{{ inventory.internal_servers.web_servers }}"
+
+    - name: Add zabbix server to inventory
+      add_host:
+        name: "{{ item.name }}.ru-central1.internal"
+        groups: "zabbix_servers"
+        ansible_host: "{{ item.ansible_host }}"
+        ansible_ssh_host: "{{ item.ansible_host }}"
+        ansible_ssh_common_args: "{{ item.ssh_args | replace('{{ bastion_public_ip }}', bastion_public_ip) }}"
+        ansible_user: "ubuntu"
+        ansible_ssh_private_key_file: "/home/alexander/.ssh/id_rsa"
+      loop: "{{ inventory.internal_servers.zabbix }}"
+
+    - name: Add elasticsearch server to inventory
+      add_host:
+        name: "{{ item.name }}.ru-central1.internal"
+        groups: "elasticsearch_servers"
+        ansible_host: "{{ item.ansible_host }}"
+        ansible_ssh_host: "{{ item.ansible_host }}"
+        ansible_ssh_common_args: "{{ item.ssh_args | replace('{{ bastion_public_ip }}', bastion_public_ip) }}"
+        ansible_user: "ubuntu"
+        ansible_ssh_private_key_file: "/home/alexander/.ssh/id_rsa"
+      loop: "{{ inventory.internal_servers.elasticsearch }}"
+
+    - name: Add kibana server to inventory
+      add_host:
+        name: "{{ item.name }}.ru-central1.internal"
+        groups: "kibana_servers"
+        ansible_host: "{{ item.ansible_host }}"
+        ansible_ssh_host: "{{ item.ansible_host }}"
+        ansible_ssh_common_args: "{{ item.ssh_args | replace('{{ bastion_public_ip }}', bastion_public_ip) }}"
+        ansible_user: "ubuntu"
+        ansible_ssh_private_key_file: "/home/alexander/.ssh/id_rsa"
+      loop: "{{ inventory.internal_servers.kibana }}"
+
+- name: Pre-check SSH connectivity and add host keys
+  hosts: all:!localhost
+  gather_facts: false
+  tasks:
+    - name: Ensure SSH key for bastion is in known_hosts
+      ansible.builtin.command:
+        cmd: "ssh-keyscan -H {{ hostvars['localhost']['bastion_public_ip'] }}"
+      register: ssh_keyscan_bastion
+      delegate_to: localhost
+      changed_when: false
+      failed_when: ssh_keyscan_bastion.rc != 0 and 'timeout' not in ssh_keyscan_bastion.stderr
+
+    - name: Add bastion host key to known_hosts
+      ansible.builtin.known_hosts:
+        name: "{{ hostvars['localhost']['bastion_public_ip'] }}"
+        key: "{{ ssh_keyscan_bastion.stdout }}"
+        state: present
+      delegate_to: localhost
+      when: ssh_keyscan_bastion.rc == 0
+
+    - name: Check SSH connectivity and add host keys to known_hosts (Bastion)
+      ansible.builtin.command:
+        cmd: "ssh-keyscan -H {{ ansible_ssh_host | default(ansible_host) }}"
+      register: ssh_keyscan_bastion
+      delegate_to: localhost
+      changed_when: false
+      failed_when: ssh_keyscan_bastion.rc != 0 and 'timeout' not in ssh_keyscan_bastion.stderr
+      when: "'bastion_hosts' in group_names"
+
+    - name: Add host keys to known_hosts for bastion
+      ansible.builtin.known_hosts:
+        name: "{{ ansible_ssh_host | default(ansible_host) }}"
+        key: "{{ ssh_keyscan_bastion.stdout }}"
+        state: present
+      delegate_to: localhost
+      when: "'bastion_hosts' in group_names and ssh_keyscan_bastion.rc == 0"
+
+    - name: Get host keys for internal servers via bastion
+      ansible.builtin.command:
+        cmd: "ssh -i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no ubuntu@{{ hostvars['localhost']['bastion_public_ip'] }} ssh-keyscan -H {{ ansible_ssh_host | default(ansible_host) }}"
+      register: ssh_keyscan_internal
+      delegate_to: localhost
+      changed_when: false
+      failed_when: ssh_keyscan_internal.rc != 0 and 'timeout' not in ssh_keyscan_internal.stderr
+      when: "'bastion_hosts' not in group_names"
+
+    - name: Add host keys to known_hosts for internal servers
+      ansible.builtin.known_hosts:
+        name: "{{ ansible_ssh_host | default(ansible_host) }}"
+        key: "{{ ssh_keyscan_internal.stdout }}"
+        state: present
+      delegate_to: localhost
+      when: "'bastion_hosts' not in group_names and ssh_keyscan_internal.rc == 0"
+
+- name: Configure all servers with common settings
+  hosts: all:!localhost
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  roles:
+    - common
+  handlers:
+    - import_tasks: roles/common/handlers/main.yml
+
+- name: Configure web servers
+  hosts: web_servers
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  roles:
+    - web
+  handlers:
+    - import_tasks: roles/web/handlers/main.yml
+
+- name: Configure Zabbix Server
+  hosts: zabbix_servers
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  vars:
+    zabbix_public_ip: "{{ hostvars['localhost']['zabbix_public_ip_global'] }}"
+    zabbix_server_fqdn: "{{ groups['zabbix_servers'][0] }}"
+  vars_files:
+    - "/home/alexander/diplom/inventory/production/vault.yml"
+  tasks:
+    - name: Include Zabbix server tasks
+      import_role:
+        name: zabbix
+        tasks_from: server.yml
+  handlers:
+    - import_tasks: roles/zabbix/handlers/main.yml
+
+- name: Configure Zabbix Agents
+  hosts: all:!localhost
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  vars:
+    zabbix_server_ip: "{{ hostvars['localhost']['zabbix_server_ip'] }}"
+    zabbix_server_fqdn: "{{ groups['zabbix_servers'][0] }}"
+    zabbix_server_port: "10051"
+    zabbix_agent_hostname: "{{ inventory_hostname_short }}"
+  tasks:
+    - name: Include Zabbix agent tasks
+      import_role:
+        name: zabbix
+        tasks_from: agent.yml
+  handlers:
+    - import_tasks: roles/zabbix/handlers/main.yml
+
+- name: Configure Zabbix Dashboards
+  hosts: zabbix_servers
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  vars:
+    zabbix_public_ip_global: "{{ hostvars['localhost']['zabbix_public_ip_global'] }}"
+  vars_files:
+    - "/home/alexander/diplom/inventory/production/vault.yml"
+  tasks:
+    - name: Include Zabbix dashboards tasks
+      import_role:
+        name: zabbix
+        tasks_from: dashboards.yml
+  handlers:
+    - import_tasks: roles/zabbix/handlers/main.yml
+
+- name: Configure Elasticsearch
+  hosts: elasticsearch_servers
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  roles:
+    - elasticsearch
+  handlers:
+    - import_tasks: roles/elasticsearch/handlers/main.yml
+
+- name: Configure Kibana
+  hosts: kibana_servers
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  vars:
+    elasticsearch_host: "{{ hostvars[groups['elasticsearch_servers'][0]]['ansible_host'] }}"
+  roles:
+    - kibana
+  handlers:
+    - import_tasks: roles/kibana/handlers/main.yml
+
+- name: Configure Filebeat on all servers
+  hosts: all:!localhost
+  become: yes
+  become_user: root
+  ignore_unreachable: true
+  roles:
+    - filebeat
+  handlers:
+    - import_tasks: roles/filebeat/handlers/main.yml
+
+- name: Test infrastructure
+  hosts: localhost
+  connection: local
+  vars:
+    balancer_ip: "{{ hostvars['localhost']['balancer_ip_global'] }}"
+    zabbix_public_ip: "{{ hostvars['localhost']['zabbix_public_ip_global'] }}"
+    kibana_public_ip: "{{ hostvars['localhost']['kibana_public_ip_global'] }}"
+  vars_files:
+    - "/home/alexander/diplom/inventory/production/vault.yml"
+  tasks:
+    - name: Test website via balancer
+      uri:
+        url: "http://{{ balancer_ip }}:80"
+        status_code: 200
+      register: website_result
+      retries: 5
+      delay: 10
+
+    - name: Test Zabbix web interface
+      uri:
+        url: "http://{{ zabbix_public_ip }}"
+        status_code: 200
+      register: zabbix_result
+      retries: 5
+      delay: 10
+
+    - name: Test Kibana web interface
+      uri:
+        url: "http://{{ kibana_public_ip }}:5601"
+        status_code: 200
+        url_username: "{{ vault_kibana_username | default('elastic') }}"
+        url_password: "{{ vault_kibana_elastic_password | default('changeme') }}"
+        force_basic_auth: yes
+      register: kibana_result
+      retries: 10
+      delay: 20
+
+    - name: Display test results
+      debug:
+        msg:
+          - "Website: {{ website_result.status | default('unreachable') }}"
+          - "Zabbix: {{ zabbix_result.status | default('unreachable') }}"
+          - "Kibana: {{ kibana_result.status | default('unreachable') }}"

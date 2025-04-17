@@ -1,0 +1,15 @@
+{
+    "name": "web-http-router",
+    "description": "HTTP router for web servers",
+    "labels": {},
+    "folderId": "{{ folder_id }}",
+    "routes": [
+      {
+        "name": "web-route",
+        "httpRouter": {
+          "backendGroupIds": ["{{ backend_group.id }}"]
+        }
+      }
+    ]
+  }
+  

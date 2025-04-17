@@ -1,0 +1,10 @@
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /var/log/nginx/access.log
+    - /var/log/nginx/error.log
+output.elasticsearch:
+  hosts: ["{{ groups['elasticsearch-server'][0] }}:9200"]
+  username: "elastic"
+  password: "{{ vault_kibana_elastic_password }}"

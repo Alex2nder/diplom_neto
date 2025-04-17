@@ -1,0 +1,55 @@
+---
+- name: Wait for SSH connection
+  wait_for_connection:
+    timeout: 600
+
+- name: Stop apt-daily service to prevent interference
+  ansible.builtin.service:
+    name: apt-daily.service
+    state: stopped
+  become: true
+  ignore_errors: yes
+
+- name: Stop apt-daily timer
+  ansible.builtin.service:
+    name: apt-daily.timer
+    state: stopped
+  become: true
+  ignore_errors: yes
+
+- name: Wait for apt lock to be released
+  ansible.builtin.shell: "while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done"
+  args:
+    executable: /bin/bash
+  become: true
+  register: apt_lock_wait
+  changed_when: false
+  retries: 24  # Ждём до 2 минут
+  delay: 5
+  until: apt_lock_wait.rc == 0
+
+- name: Update package cache
+  ansible.builtin.apt:
+    update_cache: yes
+    lock_timeout: 60
+  become: true
+  retries: 5
+  delay: 10
+  register: apt_update
+
+- name: Create monitoring user
+  ansible.builtin.user:
+    name: "monitor"
+    password: "{{ 'monitor_pass' | password_hash('sha512') }}"
+    state: present
+  become: true
+  register: monitor_user
+
+- name: Save authentication data
+  ansible.builtin.copy:
+    content: |
+      Host: {{ inventory_hostname }}
+      User: monitor
+      Password: monitor_pass
+    dest: "/home/alexander/auth_{{ inventory_hostname }}.txt"
+  delegate_to: localhost

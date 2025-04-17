@@ -1,0 +1,14 @@
+{
+    "name": "web-nat-gateway",
+    "description": "NAT gateway for web servers",
+    "labels": {},
+    "folderId": "{{ folder_id }}",
+    "regionId": "ru-central1",
+    "natGateway": {
+      "type": "NAT",
+      "sourceNat": {
+        "sourceIp": "10.0.1.254"
+      }
+    }
+  }
+  

@@ -1,0 +1,30 @@
+# Zabbix agent configuration file
+
+PidFile=/run/zabbix/zabbix_agentd.pid
+LogFile=/var/log/zabbix/zabbix_agentd.log
+LogFileSize=0
+DebugLevel=3
+
+# Address of Zabbix server (for passive checks)
+Server={{ zabbix_server_fqdn }},127.0.0.1
+
+# Address of Zabbix server (for active checks)
+ServerActive={{ zabbix_server_fqdn }}:10051
+
+# Hostname for this agent
+{% if inventory_hostname == 'zabbix-server.ru-central1.internal' %}
+Hostname=Zabbix server
+{% else %}
+Hostname={{ inventory_hostname }}
+HostMetadata=Linux
+{% endif %}
+
+# Enable passive checks
+EnableRemoteCommands=1
+ListenPort=10050
+
+# Include additional configuration files
+Include=/etc/zabbix/zabbix_agentd.d/*.conf
+
+# Timeout for connections
+Timeout=3

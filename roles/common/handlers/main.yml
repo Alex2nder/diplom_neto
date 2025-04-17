@@ -1,0 +1,8 @@
+---
+- name: Restart common services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - sshd  # Пример сервиса, настройте под ваши нужды
+  become: true

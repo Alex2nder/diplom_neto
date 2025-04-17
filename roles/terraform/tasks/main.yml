@@ -1,0 +1,6 @@
+---
+- name: Initialize Terraform
+  command: terraform init
+
+- name: Apply Terraform configuration
+  command: terraform apply -auto-approve

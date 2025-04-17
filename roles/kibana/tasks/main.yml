@@ -1,0 +1,37 @@
+- name: Add Elastic repository (Yandex Mirror 7.x)
+  ansible.builtin.shell: |
+    echo "deb [trusted=yes] https://mirror.yandex.ru/mirrors/elastic/7/ stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
+  args:
+    creates: /etc/apt/sources.list.d/elastic-7.x.list
+  become: true
+
+- name: Update APT cache
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+
+- name: Install Kibana
+  ansible.builtin.apt:
+    name: kibana
+    state: present
+  become: true
+
+- name: Configure Kibana
+  template:
+    src: kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    mode: '0644'
+  become: true
+  notify: Restart Kibana
+
+- name: Enable Kibana service
+  systemd:
+    name: kibana
+    enabled: yes
+  become: true
+
+- name: Start Kibana service
+  systemd:
+    name: kibana
+    state: started
+  become: true

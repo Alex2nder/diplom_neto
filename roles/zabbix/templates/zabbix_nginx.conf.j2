@@ -1,0 +1,22 @@
+server {
+    listen 80 default_server;
+    server_name _;
+    root /usr/share/zabbix;
+    index index.php;
+
+    access_log /var/log/nginx/zabbix_access.log;
+    error_log /var/log/nginx/zabbix_error.log debug;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        include /etc/nginx/fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PHP_VALUE "upload_max_filesize=50M \n post_max_size=50M \n max_execution_time=300";
+        fastcgi_read_timeout 300;
+    }
+}

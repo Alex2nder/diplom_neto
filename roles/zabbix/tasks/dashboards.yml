@@ -1,0 +1,295 @@
+---
+- name: Wait for Zabbix API to be available
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "apiinfo.version",
+        "params": {},
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_api_check
+  retries: 20
+  delay: 10
+  until: zabbix_api_check.status == 200 and zabbix_api_check.json.result is defined
+  delegate_to: localhost
+  become: true
+
+- name: Debug Zabbix API response
+  ansible.builtin.debug:
+    var: zabbix_api_check
+  when: zabbix_api_check.failed
+
+- name: Authenticate with Zabbix API and get auth token
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "user.login",
+        "params": {
+          "username": "Admin",
+          "password": "{{ vault_zabbix_admin_password }}"
+        },
+        "id": 1
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_auth
+  delegate_to: localhost
+  become: true
+  failed_when: "'json' not in zabbix_auth or 'result' not in zabbix_auth.json"
+
+- name: Get list of hosts
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "host.get",
+        "params": {
+          "output": ["hostid", "name"]
+        },
+        "auth": "{{ zabbix_auth.json.result }}",
+        "id": 3
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_hosts
+  delegate_to: localhost
+  become: true
+
+- name: Debug number of hosts
+  ansible.builtin.debug:
+    msg: "Number of hosts: {{ zabbix_hosts.json.result | length }}"
+  delegate_to: localhost
+  become: true
+
+- name: Filter web hosts
+  ansible.builtin.set_fact:
+    web_hosts: "{{ zabbix_hosts.json.result | selectattr('name', 'match', 'web-instance.*') | list }}"
+
+- name: Get items for all hosts
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "item.get",
+        "params": {
+          "output": ["itemid", "key_"],
+          "filter": {
+            "host": "{{ item.name }}"
+          }
+        },
+        "auth": "{{ zabbix_auth.json.result }}",
+        "id": 4
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: zabbix_items
+  loop: "{{ zabbix_hosts.json.result }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.name }}"
+  delegate_to: localhost
+  become: true
+
+- name: Get nginx items for web hosts
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "item.get",
+        "params": {
+          "output": ["itemid"],
+          "filter": {
+            "key_": "{{ item[1] }}",
+            "host": "{{ item[0].name }}"
+          }
+        },
+        "auth": "{{ zabbix_auth.json.result }}",
+        "id": 5
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: nginx_items
+  loop: "{{ web_hosts | product(['nginx.requests', 'nginx.accepts', 'nginx.dropped']) | list }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item[1] }} for {{ item[0].name }}"
+  delegate_to: localhost
+  become: true
+
+- name: Create or update Zabbix dashboard
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: "{{ lookup('template', 'dashboard.j2') }}"
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: dashboard_result
+  delegate_to: localhost
+  become: true
+
+- name: Create Zabbix triggers
+  ansible.builtin.uri:
+    url: "http://{{ zabbix_public_ip_global }}/api_jsonrpc.php"
+    method: POST
+    body_format: json
+    body: >
+      {
+        "jsonrpc": "2.0",
+        "method": "trigger.create",
+        "params": [
+          {% for host in zabbix_hosts.json.result %}
+          {% set host_items = zabbix_items.results | selectattr('item.name', 'equalto', host.name) | first | default({'json': {'result': []}}) %}
+          {% set cpu_util = host_items.json.result | selectattr('key_', 'equalto', 'system.cpu.util') | list %}
+          {% if cpu_util | length > 0 %}
+          {
+            "description": "High CPU usage on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/system.cpu.util)>80",
+            "priority": 2
+          },
+          {% endif %}
+          {% set cpu_iowait = host_items.json.result | selectattr('key_', 'equalto', 'system.cpu.util[,iowait]') | list %}
+          {% if cpu_iowait | length > 0 %}
+          {
+            "description": "High CPU IOWait on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/system.cpu.util[,iowait])>20",
+            "priority": 2
+          },
+          {% endif %}
+          {% set kernel_panic = host_items.json.result | selectattr('key_', 'equalto', 'kernel.panic') | list %}
+          {% if kernel_panic | length > 0 %}
+          {
+            "description": "Kernel panic on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/kernel.panic)>0",
+            "priority": 4
+          },
+          {% endif %}
+          {% set mem_used = host_items.json.result | selectattr('key_', 'equalto', 'vm.memory.size[pused]') | list %}
+          {% if mem_used | length > 0 %}
+          {
+            "description": "High memory usage on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/vm.memory.size[pused])>80",
+            "priority": 2
+          },
+          {% endif %}
+          {% set disk_used = host_items.json.result | selectattr('key_', 'equalto', 'vfs.fs.size[/,pused]') | list %}
+          {% if disk_used | length > 0 %}
+          {
+            "description": "High disk usage on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/vfs.fs.size[/,pused])>90",
+            "priority": 2
+          },
+          {% endif %}
+          {% set disk_await = host_items.json.result | selectattr('key_', 'equalto', 'vfs.dev.disk.await') | list %}
+          {% if disk_await | length > 0 %}
+          {
+            "description": "High disk saturation on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/vfs.dev.disk.await)>50",
+            "priority": 2
+          },
+          {% endif %}
+          {% set fs_readonly = host_items.json.result | selectattr('key_', 'equalto', 'vfs.fs.readonly[/]') | list %}
+          {% if fs_readonly | length > 0 %}
+          {
+            "description": "Read-only filesystem on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/vfs.fs.readonly[/])=1",
+            "priority": 4
+          },
+          {% endif %}
+          {% set net_bytes = host_items.json.result | selectattr('key_', 'equalto', 'net.if.in[eth0,bytes]') | list %}
+          {% if net_bytes | length > 0 %}
+          {
+            "description": "High network traffic on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/net.if.in[eth0,bytes])>1000000",
+            "priority": 2
+          },
+          {% endif %}
+          {% set net_drops = host_items.json.result | selectattr('key_', 'equalto', 'net.if.in[eth0,drops]') | list %}
+          {% if net_drops | length > 0 %}
+          {
+            "description": "High network drops on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/net.if.in[eth0,drops])>10",
+            "priority": 2
+          },
+          {% endif %}
+          {% set net_errors = host_items.json.result | selectattr('key_', 'equalto', "net.if.in[eth0,errors]") | list %}
+          {% if net_errors | length > 0 %}
+          {
+            "description": "Network errors on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/net.if.in[eth0,errors])>0",
+            "priority": 3
+          }{{ '' if loop.last and not web_hosts else ',' }}
+          {% endif %}
+          {% endfor %}
+          {% if web_hosts %}
+          {% for host in web_hosts %}
+          {% set host_items = zabbix_items.results | selectattr('item.name', 'equalto', host.name) | first | default({'json': {'result': []}}) %}
+          {% set nginx_requests = nginx_items.results | selectattr('item', 'equalto', [host, 'nginx.requests']) | list %}
+          {% if nginx_requests | length > 0 %}
+          {
+            "description": "High HTTP requests on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/nginx.requests)>1000",
+            "priority": 2
+          },
+          {% endif %}
+          {% set nginx_accepts = nginx_items.results | selectattr('item', 'equalto', [host, 'nginx.accepts']) | list %}
+          {% if nginx_accepts | length > 0 %}
+          {
+            "description": "High Nginx accepts on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/nginx.accepts)>2000",
+            "priority": 2
+          },
+          {% endif %}
+          {% set nginx_dropped = nginx_items.results | selectattr('item', 'equalto', [host, 'nginx.dropped']) | list %}
+          {% if nginx_dropped | length > 0 %}
+          {
+            "description": "Nginx dropped connections on {{ host.name }}",
+            "expression": "last(/{{ host.name }}/nginx.dropped)>0",
+            "priority": 3
+          }{{ '' if loop.last else ',' }}
+          {% endif %}
+          {% endfor %}
+          {% endif %}
+        ],
+        "auth": "{{ zabbix_auth.json.result }}",
+        "id": 6
+      }
+    headers:
+      Content-Type: "application/json-rpc"
+    status_code: 200
+    return_content: yes
+  register: trigger_result
+  delegate_to: localhost
+  become: true
+  when: trigger_result is not defined or 'error' not in trigger_result.json
